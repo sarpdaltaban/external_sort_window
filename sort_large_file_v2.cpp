@@ -22,61 +22,6 @@ using namespace chrono;
 uint64_t file_reads = 0;
 uint64_t file_writes = 0;
 
-template <typename Key, typename Value, std::size_t Capacity>
-class StaticUnorderedMap {
-public:
-    using PairType = std::pair<Key, Value>;
-
-    bool insert(const Key& key, const Value& value) {
-        if (size_ >= Capacity || find(key) != nullptr) {
-            return false;
-        }
-        data_[size_] = std::make_optional<PairType>(key, value);
-        ++size_;
-        return true;
-    }
-
-    Value* find(const Key& key) {
-        for (std::size_t i = 0; i < size_; ++i) {
-            if (data_[i] && data_[i]->first == key) {
-                return &data_[i]->second;
-            }
-        }
-        return nullptr;
-    }
-
-    bool erase(const Key& key) {
-        for (std::size_t i = 0; i < size_; ++i) {
-            if (data_[i] && data_[i]->first == key) {
-                data_[i].reset();
-                if (i != size_ - 1) {
-                    std::swap(data_[i], data_[size_ - 1]);
-                }
-                --size_;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    Value& operator[](const Key& key) {
-        if (auto* val = find(key)) {
-            return *val;
-        }
-        if (size_ >= Capacity) {
-            throw std::out_of_range("StaticUnorderedMap capacity exceeded");
-        }
-        data_[size_] = std::make_optional<PairType>(key, Value{});
-        return data_[size_++]->second;
-    }
-
-    std::size_t size() const { return size_; }
-
-private:
-    std::array<std::optional<PairType>, Capacity> data_{};
-    std::size_t size_ = 0;
-};
-
 /* 
  * StaticMinHeap: A fixed-size (deterministic) min-heap implementation for managing elements efficiently.
  * Provides basic heap operations like inserting an element, retrieving the smallest element, and removing it.
