@@ -14,12 +14,14 @@
 #include <unordered_map>
 #include <optional>
 
-#define DEBUG 0
+#define DEBUG           0
+#define LESS_FILE_OPS   0
 
 using namespace std;
 using namespace chrono;
 
-uint64_t file_reads = 0;
+uint64_t file_reads_once = 0;
+uint64_t file_reads_twice = 0;
 uint64_t file_writes = 0;
 
 /* 
@@ -139,14 +141,16 @@ public:
         : heap_size(0), depth(depth), min_heap(chunk_streams.size()) {
 
         umap.reserve(chunk_streams.size());
-
+#if LESS_FILE_OPS
+        read_buffer.reserve(depth);
+#endif
         for (ifstream* file : chunk_streams) {
             vector<T> buffer(depth, numeric_limits<T>::max());  // Pre-fill with max values
             start_indices[file] = 0;
             sizes[file] = 0;
 
             // Read data directly into the vector
-            file_reads++;
+            file_reads_once++;
             file->read(reinterpret_cast<char*>(buffer.data()), sizeof(T) * depth);
             streamsize bytes_read = file->gcount();  // Get the actual number of bytes read
 
@@ -220,6 +224,9 @@ public:
 private:
     uint64_t heap_size;
     uint64_t depth;
+#if LESS_FILE_OPS
+    vector<T> read_buffer;
+#endif   
     unordered_map<ifstream*, vector<T>> umap;
     unordered_map<ifstream*, uint64_t> start_indices;  // Track start of ring buffer
     unordered_map<ifstream*, uint64_t> sizes;  // Track current size of each vector
@@ -232,21 +239,32 @@ private:
         }
 
         streamsize bytes_read = 0;
-
         vector<T>& buffer = umap[file];
-
         uint64_t remaining_size = depth - sizes[file];
 
         if (remaining_size > start_indices[file]){
-            file_reads++;
+#if LESS_FILE_OPS
+            file->read(reinterpret_cast<char*>(read_buffer.data()), sizeof(T) * remaining_size);
+            bytes_read += file->gcount();
+            uint64_t elements_read = bytes_read / sizeof(T);
+            uint64_t first_chunk = min(elements_read, depth - start_indices[file]);
+            copy_n(read_buffer.begin(), first_chunk, buffer.begin() + start_indices[file]);
+
+            if (elements_read > first_chunk) {
+                copy_n(read_buffer.begin() + first_chunk, elements_read - first_chunk, buffer.begin());
+            }
+            file_reads_twice++;
+#else   
             file->read(reinterpret_cast<char*>(buffer.data() + start_indices[file] + sizes[file]), sizeof(T) * (remaining_size - start_indices[file]));
             bytes_read += file->gcount();
-            file_reads++;
+            file_reads_twice++;
             file->read(reinterpret_cast<char*>(buffer.data()), sizeof(T) * (start_indices[file]));
             bytes_read += file->gcount();
+            file_reads_twice++;
+#endif
         } else {
-            file_reads++;
-            file->read(reinterpret_cast<char*>(buffer.data() + start_indices[file] + sizes[file]), sizeof(T) * (remaining_size - start_indices[file]));
+            file_reads_once++;
+            file->read(reinterpret_cast<char*>(buffer.data() + ((start_indices[file] + sizes[file]) % depth)), sizeof(T) * (remaining_size - start_indices[file]));
             bytes_read += file->gcount();
         }
 
@@ -256,9 +274,7 @@ private:
             if (sizes[file] == 0 && elements_read){
                 min_heap.emplace(file, umap[file][start_indices[file]]);
             }
-
             sizes[file] += elements_read;  
-
             heap_size += elements_read;
         }
     }
@@ -278,7 +294,11 @@ void merge_files_using_min_heap(const string& output_file, vector<string> temp_f
         chunk_streams.push_back(file);
     }
 
-    uint64_t chunk_window =  chunk_size / chunk_streams.size();
+    int chunk_window =  (chunk_size / chunk_streams.size()) 
+    - 2 * sizeof(unordered_map<ifstream*, uint64_t>) * chunk_streams.size() - sizeof(unordered_map<ifstream*, vector<T>>) - 4 * sizeof(uint64_t)
+    - sizeof(pair<ifstream*, T>) * chunk_streams.size();
+
+    cout << "chunk window = " << chunk_window << endl;
 
     if (chunk_window > 1){
         StaticMinHeapMultiLayer<T> min_heap_multi_layer(chunk_streams, chunk_window);
@@ -352,7 +372,10 @@ void merge_files_using_min_heap(const string& output_file, vector<string> temp_f
         remove(temp_file.c_str());
     }
 
-    cout << "file reads = " << file_reads << " file writes = " << file_writes << endl;
+    cout << "file writes = " << file_writes << endl;
+    cout << "file reads = " << file_reads_once + file_reads_twice << endl;
+    cout << "once = " << file_reads_once << endl;
+    cout << "twice = " << file_reads_twice << endl;
 }
 
 /* 
